@@ -2,8 +2,10 @@ import socket
 import threading
 import json
 
-HOST = '127.0.0.1'
-PORT = 5000
+import os
+
+port = int(os.environ.get("PORT", 5000))
+socketio.run(app, host="0.0.0.0", port=port)
 
 # pedir UID al iniciar
 uid = input("Ingresa tu UID (usuario único): ").strip()
