@@ -1,77 +1,90 @@
-from flask import Flask, request
-from flask_socketio import SocketIO, join_room
+# servidor.py
+# servidor de chat en python con chats por comunidad y privados
+import socket
+import threading
+import json
 from datetime import datetime
+
 import os
 
-app = Flask(__name__)
-app.config["SECRET_KEY"] = "secret"
+port = int(os.environ.get("PORT", 5000))
+socketio.run(app, host="0.0.0.0", port=port)
 
-socketio = SocketIO(app, cors_allowed_origins="*")
+clientes = []  # lista de (socket, uid)
+lock = threading.Lock()
 
-usuarios = {}  # sid -> uid
+def enviar_mensaje(data, cliente_emisor=None):
+    with lock:
+        if data.get('privado'):
+            # enviar solo a usuarios indicados
+            for cliente, uid in clientes:
+                if uid in data['usuarios'] and cliente != cliente_emisor:
+                    try:
+                        cliente.send(json.dumps(data).encode())
+                    except:
+                        cliente.close()
+                        clientes.remove((cliente, uid))
+        else:
+            # comunidad publica
+            for cliente, uid in clientes:
+                if cliente != cliente_emisor:
+                    try:
+                        cliente.send(json.dumps(data).encode())
+                    except:
+                        cliente.close()
+                        clientes.remove((cliente, uid))
 
+def manejar_cliente(cliente, direccion):
+    try:
+        cliente.send("envia tu uid:".encode())
+        uid = cliente.recv(1024).decode().strip()
+        with lock:
+            clientes.append((cliente, uid))
+        print(f"[conectado] {direccion} - uid:{uid}")
 
-@socketio.on("connect")
-def conectar():
-    print("cliente conectado")
+        while True:
+            mensaje = cliente.recv(2048)
+            if not mensaje:
+                break
+            try:
+                data = json.loads(mensaje.decode())
+            except:
+                continue
 
+            now = datetime.now()
+            data['hora'] = now.strftime("%H:%M")
+            data['fecha'] = now.isoformat()
+            data['uid'] = uid
 
-@socketio.on("registrar")
-def registrar(data):
+            print(f"[{direccion}] {data}")
+            enviar_mensaje(data, cliente_emisor=cliente)
 
-    uid = data.get("uid")
+    except Exception as e:
+        print(f"[error] {direccion}: {e}")
+    finally:
+        with lock:
+            clientes[:] = [(c, u) for c, u in clientes if c != cliente]
+        cliente.close()
+        print(f"[desconectado] {direccion}")
 
-    usuarios[request.sid] = uid
+def iniciar_servidor():
+    servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    servidor.bind((HOST, PORT))
+    servidor.listen()
+    print(f"[servidor activo] {HOST}:{PORT}")
 
-    print("usuario registrado:", uid)
-
-
-@socketio.on("join_comunidad")
-def join_comunidad(data):
-
-    comunidad = data.get("comunidad")
-
-    if comunidad:
-        join_room(comunidad)
-        print("usuario entro a comunidad:", comunidad)
-
-
-@socketio.on("mensaje")
-def manejar_mensaje(data):
-
-    now = datetime.now()
-
-    data["hora"] = now.strftime("%H:%M")
-    data["fecha"] = now.isoformat()
-
-    privado = data.get("privado", False)
-
-    if privado:
-
-        usuarios_destino = data.get("usuarios", [])
-
-        for sid, uid in usuarios.items():
-
-            if uid in usuarios_destino:
-                socketio.emit("message", data, room=sid)
-
-    else:
-
-        comunidad = data.get("comunidad")
-
-        socketio.emit("message", data, room=comunidad)
-
-
-@socketio.on("disconnect")
-def desconectar():
-
-    if request.sid in usuarios:
-        print("usuario desconectado:", usuarios[request.sid])
-        usuarios.pop(request.sid)
-
+    try:
+        while True:
+            cliente, direccion = servidor.accept()
+            hilo = threading.Thread(target=manejar_cliente, args=(cliente, direccion))
+            hilo.start()
+    except KeyboardInterrupt:
+        print("\n[servidor detenido]")
+    finally:
+        with lock:
+            for c, _ in clientes:
+                c.close()
+        servidor.close()
 
 if __name__ == "__main__":
-
-    port = int(os.environ.get("PORT", 5000))
-
-    socketio.run(app, host="0.0.0.0", port=port)
+    iniciar_servidor()
