@@ -1,74 +1,91 @@
-import socket
+import socketio
 import threading
-import json
 
-import os
+SERVER_URL = "https://proyectointernet.onrender.com"  # tu URL en Render
 
-port = int(os.environ.get("PORT", 5000))
-socketio.run(app, host="0.0.0.0", port=port)
+uid = input("Ingresa tu UID: ").strip()
+nombre = input("Ingresa tu nombre: ").strip()
+modo = input("Comunidad (c) o chat privado (p)?: ").strip().lower()
 
-# pedir UID al iniciar
-uid = input("Ingresa tu UID (usuario único): ").strip()
-
-# comunidad o chat privado
-modo = input("Deseas entrar a comunidad (c) o chat privado (p)? ").strip().lower()
-if modo == 'c':
-    destino = input("Nombre de la comunidad: ").strip()
-    privado = False
+if modo == "c":
+    comunidad_actual = input("Nombre de la comunidad: ").strip()
+    chat_privado_actual = None
     usuarios_privados = []
 else:
-    usuarios_privados = input("UIDs de usuarios privados (separados por coma): ").strip().split(',')
-    privado = True
-    destino = None
+    chat_privado_actual = input("UID del chat privado: ").strip()
+    comunidad_actual = None
+    usuarios_privados = [uid, chat_privado_actual]
 
-def recibir_mensajes(cliente):
-    while True:
-        try:
-            mensaje = cliente.recv(4096).decode()
-            data = json.loads(mensaje)
-            if data.get("privado"):
-                print(f"[PRIVADO] {data['nombre']} ({data['hora']}): {data['mensaje']}")
-            else:
-                print(f"[{data['comunidad']}] {data['nombre']} ({data['hora']}): {data['mensaje']}")
-        except:
-            print("Conexión cerrada.")
-            cliente.close()
-            break
-def enviar_mensajes(cliente):
-    while True:
-        mensaje = input()
-        if mensaje.strip() == "":
-            continue
+sio = socketio.Client()
 
-        if privado:
-            data = {
-                "mensaje": mensaje,
-                "nombre": uid, 
-                "privado": True,
-                "usuarios": [uid, usuarios_privados[0]]  
-            }
+@sio.event
+def connect():
+    print("Conectado al servidor")
+    if comunidad_actual:
+        sio.emit("join_comunidad", {"comunidad": comunidad_actual})
+    else:
+        sio.emit("join", {"uid": uid, "nombre": nombre})
+    sio.emit("cargar_historial", {
+        "uid": uid,
+        "comunidad": comunidad_actual,
+        "privado_con": chat_privado_actual
+    })
+
+@sio.event
+def disconnect():
+    print("Desconectado")
+
+@sio.on("message")
+def recibir(data):
+    if data.get("privado"):
+        if chat_privado_actual and data["uid"] in usuarios_privados:
+            print(f"[PRIVADO] {data['nombre']} ({data['hora']}): {data['mensaje']}")
+    else:
+        if comunidad_actual and data.get("comunidad") == comunidad_actual:
+            print(f"[{data['comunidad']}] {data['nombre']} ({data['hora']}): {data['mensaje']}")
+
+@sio.on("historial")
+def mostrar_historial(mensajes):
+    print("Historial:")
+    for m in mensajes:
+        if m.get("privado"):
+            if chat_privado_actual and set(m.get("usuarios", [])) == set(usuarios_privados):
+                print(f"[PRIVADO] {m['nombre']} ({m['hora']}): {m['mensaje']}")
         else:
-            # mensaje a la comunidad
-            data = {
-                "tipo": "comunidad",
-                "comunidad": destino,
-                "mensaje": mensaje,
-                "nombre": uid,
-            }
+            if comunidad_actual and m.get("comunidad") == comunidad_actual:
+                print(f"[{m['comunidad']}] {m['nombre']} ({m['hora']}): {m['mensaje']}")
+    print("----- Fin historial -----")
 
-        cliente.send(json.dumps(data).encode())
+def enviar_mensajes():
+    while True:
+        texto = input()
+        if not texto.strip():
+            continue
+        data = {
+            "nombre": nombre,
+            "mensaje": texto,
+            "uid": uid,
+            "privado": False,
+            "comunidad": comunidad_actual
+        }
+        if chat_privado_actual:
+            data["privado"] = True
+            data["usuarios"] = usuarios_privados
+            data.pop("comunidad", None)
+        sio.emit("mensaje", data)
 
-def iniciar_cliente():
-    cliente = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    cliente.connect((HOST, PORT))
-    # enviar UID al servidor
-    cliente.send(uid.encode())
-    print("Conectado al servidor.")
+def main():
+    try:
+        sio.connect(SERVER_URL)
+    except Exception as e:
+        print("Error conectando:", e)
+        return
 
-    hilo_recibir = threading.Thread(target=recibir_mensajes, args=(cliente,))
-    hilo_recibir.start()
+    hilo = threading.Thread(target=enviar_mensajes)
+    hilo.daemon = True
+    hilo.start()
 
-    enviar_mensajes(cliente)
+    sio.wait()
 
 if __name__ == "__main__":
-    iniciar_cliente()
+    main()
