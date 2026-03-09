@@ -1,46 +1,77 @@
-# servidor.py
-# servidor de chat en python con chats por comunidad y privados
-import socket
-import threading
-import json
+from flask import Flask, request
+from flask_socketio import SocketIO, join_room
+from datetime import datetime
+import os
 
-HOST = "127.0.0.1"
-PORT = 5000
+app = Flask(__name__)
+app.config["SECRET_KEY"] = "secret"
 
-uid = input("Tu UID: ")
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-cliente = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-cliente.connect((HOST, PORT))
+usuarios = {}  # sid -> uid
 
-cliente.send(uid.encode())
 
-def recibir():
+@socketio.on("connect")
+def conectar():
+    print("cliente conectado")
 
-    while True:
 
-        try:
-            mensaje = cliente.recv(4096).decode()
-            data = json.loads(mensaje)
+@socketio.on("registrar")
+def registrar(data):
 
-            print(f"{data['nombre']} ({data['hora']}): {data['mensaje']}")
+    uid = data.get("uid")
 
-        except:
-            print("conexion cerrada")
-            break
+    usuarios[request.sid] = uid
 
-def enviar():
+    print("usuario registrado:", uid)
 
-    while True:
 
-        texto = input()
+@socketio.on("join_comunidad")
+def join_comunidad(data):
 
-        data = {
-            "nombre": uid,
-            "mensaje": texto
-        }
+    comunidad = data.get("comunidad")
 
-        cliente.send(json.dumps(data).encode())
+    if comunidad:
+        join_room(comunidad)
+        print("usuario entro a comunidad:", comunidad)
 
-threading.Thread(target=recibir).start()
 
-enviar()
+@socketio.on("mensaje")
+def manejar_mensaje(data):
+
+    now = datetime.now()
+
+    data["hora"] = now.strftime("%H:%M")
+    data["fecha"] = now.isoformat()
+
+    privado = data.get("privado", False)
+
+    if privado:
+
+        usuarios_destino = data.get("usuarios", [])
+
+        for sid, uid in usuarios.items():
+
+            if uid in usuarios_destino:
+                socketio.emit("message", data, room=sid)
+
+    else:
+
+        comunidad = data.get("comunidad")
+
+        socketio.emit("message", data, room=comunidad)
+
+
+@socketio.on("disconnect")
+def desconectar():
+
+    if request.sid in usuarios:
+        print("usuario desconectado:", usuarios[request.sid])
+        usuarios.pop(request.sid)
+
+
+if __name__ == "__main__":
+
+    port = int(os.environ.get("PORT", 5000))
+
+    socketio.run(app, host="0.0.0.0", port=port)
